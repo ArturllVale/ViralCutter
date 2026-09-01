@@ -38,7 +38,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest numpy ffmpeg-python tqdm deep-translator
+          pip install pytest numpy ffmpeg-python tqdm deep-translator yt-dlp google-genai psutil
 
       - name: Compile and Lint Check
         run: |
