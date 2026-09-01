@@ -159,36 +159,77 @@ def generate_short_fallback(input_file, output_file, index, project_folder, fina
     
     finalize_video(input_file, output_file, index, fps, project_folder, final_folder)
 
-def finalize_video(input_file, output_file, index, fps, project_folder, final_folder):
-    """Mux audio and video."""
-    audio_file = os.path.join(project_folder, "cuts", f"output-audio-{index}.aac")
-    subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", input_file, "-vn", "-acodec", "copy", audio_file], 
-                   check=False, capture_output=True)
+from scripts.download_video import validate_video_file
 
-    if os.path.exists(audio_file) and os.path.getsize(audio_file) > 0:
-        final_output = os.path.join(final_folder, f"final-output{str(index).zfill(3)}_processed.mp4")
-        encoder_name, encoder_preset = get_best_encoder()
-        command = [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-stats",
+def finalize_video(input_file, output_file, index, fps, project_folder, final_folder):
+    """Mux audio and video robustly with encoder fallback and container validation."""
+    final_output = os.path.join(final_folder, f"final-output{str(index).zfill(3)}_processed.mp4")
+    encoder_name, encoder_preset = get_best_encoder()
+
+    def build_mux_cmd(v_codec, v_preset):
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", output_file,
-            "-i", audio_file,
-            "-c:v", encoder_name, "-preset", encoder_preset, "-b:v", "5M",
+            "-i", input_file,
+            "-map", "0:v:0",
+            "-map", "1:a:0?",
+            "-c:v", v_codec, "-preset", v_preset
+        ]
+        if "nvenc" in v_codec or "amf" in v_codec or "qsv" in v_codec:
+            cmd.extend(["-b:v", "5M"])
+        cmd.extend([
             "-c:a", "aac", "-b:a", "192k",
             "-r", str(fps),
             final_output
-        ]
-        try:
-            subprocess.run(command, check=True) #, capture_output=True)
+        ])
+        return cmd
+
+    # 1. Hardware Mux
+    success = False
+    try:
+        cmd_hw = build_mux_cmd(encoder_name, encoder_preset)
+        subprocess.run(cmd_hw, check=True, capture_output=True, text=True)
+        if validate_video_file(final_output):
+            success = True
             print(f"Final file generated: {final_output}")
-            try:
-                os.remove(audio_file)
-                os.remove(output_file) 
-            except:
-                pass
-        except subprocess.CalledProcessError as e:
-            print(f"Error muxing: {e}")
-    else:
-        print(f"Warning: No audio extracted for {input_file}")
+    except (subprocess.CalledProcessError, Exception) as e:
+        stderr_msg = e.stderr if hasattr(e, 'stderr') and e.stderr else str(e)
+        print(f"[WARN] Hardware muxing failed with {encoder_name}: {stderr_msg}. Retrying with CPU libx264...")
+        if os.path.exists(final_output):
+            try: os.remove(final_output)
+            except: pass
+
+    # 2. CPU Fallback
+    if not success:
+        try:
+            cmd_cpu = build_mux_cmd("libx264", "ultrafast")
+            subprocess.run(cmd_cpu, check=True, capture_output=True, text=True)
+            if validate_video_file(final_output):
+                success = True
+                print(f"Final file generated (CPU fallback): {final_output}")
+            else:
+                raise RuntimeError(f"Generated final video is invalid or empty: {final_output}")
+        except subprocess.CalledProcessError as e2:
+            stderr_msg2 = e2.stderr if hasattr(e2, 'stderr') and e2.stderr else str(e2)
+            if os.path.exists(final_output):
+                try: os.remove(final_output)
+                except: pass
+            raise RuntimeError(f"FFmpeg error muxing {final_output}: {stderr_msg2}") from e2
+
+    # Cleanup temp video file
+    if os.path.exists(output_file):
+        try:
+            os.remove(output_file)
+        except Exception:
+            pass
+
+    # Cleanup legacy audio file if left over
+    legacy_audio = os.path.join(project_folder, "cuts", f"output-audio-{index}.aac")
+    if os.path.exists(legacy_audio):
+        try:
+            os.remove(legacy_audio)
+        except Exception:
+            pass
 
 
 def calculate_mouth_ratio(landmarks):
@@ -468,10 +509,6 @@ def generate_short_haar(input_file, output_file, index, project_folder, final_fo
     cap.release()
     out.release()
     
-    finalize_video(input_file, output_file, index, fps, project_folder, final_folder)
-
-    finalize_video(input_file, output_file, index, fps, project_folder, final_folder)
-
     finalize_video(input_file, output_file, index, fps, project_folder, final_folder)
 
 def generate_short_insightface(input_file, output_file, index, project_folder, final_folder, face_mode="auto", detection_period=None, filter_threshold=0.35, two_face_threshold=0.60, confidence_threshold=0.30, dead_zone=40, focus_active_speaker=False, active_speaker_mar=0.03, active_speaker_score_diff=1.5, include_motion=False, active_speaker_motion_deadzone=3.0, active_speaker_motion_sensitivity=0.05, active_speaker_decay=2.0, no_face_mode="padding"):
@@ -1170,7 +1207,27 @@ def edit(project_folder="tmp", face_model="insightface", face_mode="auto", detec
         if input_filename.startswith("output") and segments_data and index < len(segments_data):
              title = segments_data[index].get("title", f"Segment_{index}")
              safe_title = "".join([c for c in title if c.isalnum() or c in " _-"]).strip().replace(" ", "_")[:60]
+             if not safe_title:
+                 safe_title = f"Segment_{index}"
              base_name_final = f"{index:03d}_{safe_title}"
+
+        new_mp4_name = f"{base_name_final}.mp4"
+        new_mp4_path = os.path.join(final_folder, new_mp4_name)
+
+        if validate_video_file(new_mp4_path):
+            print(f"Reusing existing edited video (9:16): {new_mp4_name}")
+            timeline_file = os.path.join(final_folder, f"{base_name_final}_timeline.json")
+            det_mode = "1"
+            if os.path.exists(timeline_file):
+                try:
+                    with open(timeline_file, 'r') as tf:
+                        tl = json.load(tf)
+                        if tl and isinstance(tl, list) and any(t.get('mode') == '2' for t in tl):
+                            det_mode = "2"
+                except Exception:
+                    pass
+            face_modes_log[f"output{str(index).zfill(3)}"] = det_mode
+            continue
 
         if os.path.exists(input_file):
             success = False

@@ -312,10 +312,28 @@ def convert_vtt_to_srt(project_folder):
                         end = parts[1].strip().split(' ')[0]
 
                         def fix_time(t):
-                            t = t.replace('.', ',')
-                            if t.count(':') == 1:
-                                t = "00:" + t
-                            return t
+                            t = t.strip().split()[0]
+                            if '.' in t:
+                                hms, ms = t.split('.', 1)
+                                ms = (ms + "000")[:3]
+                            elif ',' in t:
+                                hms, ms = t.split(',', 1)
+                                ms = (ms + "000")[:3]
+                            else:
+                                hms, ms = t, "000"
+                            parts = hms.split(':')
+                            try:
+                                if len(parts) == 3:
+                                    h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+                                elif len(parts) == 2:
+                                    h, m, s = 0, int(parts[0]), int(parts[1])
+                                elif len(parts) == 1:
+                                    h, m, s = 0, 0, int(parts[0])
+                                else:
+                                    h, m, s = 0, 0, 0
+                                return f"{h:02d}:{m:02d}:{s:02d},{ms}"
+                            except ValueError:
+                                return "00:00:00,000"
 
                         current_start = fix_time(start)
                         current_end = fix_time(end)
@@ -329,12 +347,13 @@ def convert_vtt_to_srt(project_folder):
                         if not final_line or final_line == last_text:
                             continue
 
-                        srt_content.append(f"{counter}\n")
-                        srt_content.append(f"{current_start} --> {current_end}\n")
-                        srt_content.append(f"{final_line}\n\n")
+                        if current_start and current_end:
+                            srt_content.append(f"{counter}\n")
+                            srt_content.append(f"{current_start} --> {current_end}\n")
+                            srt_content.append(f"{final_line}\n\n")
 
-                        last_text = final_line
-                        counter += 1
+                            last_text = final_line
+                            counter += 1
 
                 with open(new_name, 'w', encoding='utf-8') as f_out:
                     f_out.writelines(srt_content)
