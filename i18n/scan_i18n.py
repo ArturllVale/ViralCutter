@@ -1,7 +1,11 @@
 import ast
 import glob
 import json
+import os
 from collections import OrderedDict
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+LOCALE_DIR = os.path.join(os.path.dirname(__file__), "locale")
 
 
 def extract_i18n_strings(node):
@@ -13,8 +17,10 @@ def extract_i18n_strings(node):
         and node.func.id == "i18n"
     ):
         for arg in node.args:
-            if isinstance(arg, ast.Str):
-                i18n_strings.append(arg.s)
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                i18n_strings.append(arg.value)
+            elif type(arg).__name__ == 'Str':
+                i18n_strings.append(getattr(arg, 's', ''))
 
     for child_node in ast.iter_child_nodes(node):
         i18n_strings.extend(extract_i18n_strings(child_node))
@@ -23,53 +29,38 @@ def extract_i18n_strings(node):
 
 
 # scan the directory for all .py files (recursively)
-# for each file, parse the code into an AST
-# for each AST, extract the i18n strings
-
 strings = []
-for filename in glob.iglob("**/*.py", recursive=True):
-    with open(filename, "r") as f:
-        code = f.read()
-        if "I18nAuto" in code:
-            tree = ast.parse(code)
-            i18n_strings = extract_i18n_strings(tree)
-            print(filename, len(i18n_strings))
-            strings.extend(i18n_strings)
+for filename in glob.iglob(os.path.join(BASE_DIR, "**", "*.py"), recursive=True):
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            code = f.read()
+            if "i18n" in code:
+                tree = ast.parse(code)
+                i18n_strings = extract_i18n_strings(tree)
+                if i18n_strings:
+                    rel_name = os.path.relpath(filename, BASE_DIR)
+                    print(f"{rel_name}: {len(i18n_strings)} strings")
+                    strings.extend(i18n_strings)
+    except Exception as e:
+        print(f"Error parsing {filename}: {e}")
+
 code_keys = set(strings)
-"""
-n_i18n.py
-gui_v1.py 26
-app.py 16
-infer-web.py 147
-scan_i18n.py 0
-i18n.py 0
-lib/train/process_ckpt.py 1
-"""
-print()
-print("Total unique:", len(code_keys))
+print(f"\nTotal unique keys found in code: {len(code_keys)}")
 
+standard_file = os.path.join(LOCALE_DIR, "en_US.json")
+if os.path.exists(standard_file):
+    with open(standard_file, "r", encoding="utf-8") as f:
+        standard_data = json.load(f, object_pairs_hook=OrderedDict)
+    standard_keys = set(standard_data.keys())
 
-standard_file = "i18n/locale/zh_CN.json"
-with open(standard_file, "r", encoding="utf-8") as f:
-    standard_data = json.load(f, object_pairs_hook=OrderedDict)
-standard_keys = set(standard_data.keys())
+    unused_keys = standard_keys - code_keys
+    print(f"Unused keys in {os.path.basename(standard_file)}: {len(unused_keys)}")
+    for unused_key in sorted(unused_keys):
+        print(f"\t- {unused_key}")
 
-# Define the standard file name
-unused_keys = standard_keys - code_keys
-print("Unused keys:", len(unused_keys))
-for unused_key in unused_keys:
-    print("\t", unused_key)
-
-missing_keys = code_keys - standard_keys
-print("Missing keys:", len(missing_keys))
-for missing_key in missing_keys:
-    print("\t", missing_key)
-
-code_keys_dict = OrderedDict()
-for s in strings:
-    code_keys_dict[s] = s
-
-# write back
-with open(standard_file, "w", encoding="utf-8") as f:
-    json.dump(code_keys_dict, f, ensure_ascii=False, indent=4, sort_keys=True)
-    f.write("\n")
+    missing_keys = code_keys - standard_keys
+    print(f"Missing keys in {os.path.basename(standard_file)}: {len(missing_keys)}")
+    for missing_key in sorted(missing_keys):
+        print(f"\t+ {missing_key}")
+else:
+    print(f"Standard file {standard_file} not found.")

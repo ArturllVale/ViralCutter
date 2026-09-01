@@ -293,7 +293,7 @@ def main():
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     api_config = json.load(f)
-            except:
+            except Exception:
                 pass
 
         # Seleção do Backend de IA
@@ -345,9 +345,9 @@ def main():
                             else:
                                 print(i18n("Invalid selection. Using first model."))
                                 args.ai_model_name = models[0]
-                        except:
-                             print(i18n("Invalid input. Using first model."))
-                             args.ai_model_name = models[0]
+                        except Exception:
+                            print(i18n("Invalid input. Using first model."))
+                            args.ai_model_name = models[0]
                              
                 else:
                     ai_backend = "manual"
@@ -564,7 +564,7 @@ def main():
             # Parse dead zone safely
             try:
                 dead_zone_val = float(args.face_dead_zone)
-            except:
+            except Exception:
                 dead_zone_val = 40.0
                 
             edit_video.edit(

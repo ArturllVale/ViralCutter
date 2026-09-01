@@ -241,6 +241,7 @@ def export_pack(project_path, segment_index, output_format="premiere"):
     try:
         # shutil.rmtree(stage_dir)
         pass
-    except: pass
+    except Exception:
+        pass
     
     return zip_path
