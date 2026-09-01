@@ -1,0 +1,89 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments (uv, venv, conda)
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Project Generated Data & Outputs
+VIRALS/
+temp/
+tmp/
+*.tmp
+
+# Machine Learning Models & Weights
+models/*
+!models/.local-model-here
+!models/.gitkeep
+*.gguf
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+.insightface/
+.cache/
+
+# Media & Generated Subtitles in Root
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.mp3
+*.wav
+*.aac
+*.flac
+*.srt
+*.ass
+*.vtt
+
+# Logs
+*.log
+logs/
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints/
+
+# Environment Variables & Local Configs
+.env
+.env.*
+!.env.example
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
