@@ -138,6 +138,8 @@ def main():
     parser.add_argument("--video-quality", choices=["best", "1080p", "720p", "480p"], default="best", help="Video download quality")
     parser.add_argument("--skip-youtube-subs", action="store_true", help="Skip downloading YouTube subtitles")
     parser.add_argument("--translate-target", help="Target language code for subtitle translation (e.g. 'pt', 'en').")
+    parser.add_argument("--cookies-from-browser", help="Browser to extract cookies from for yt-dlp (e.g. chrome, firefox, edge, brave, opera)")
+    parser.add_argument("--cookiefile", help="Path to cookies.txt file for yt-dlp authentication")
 
     args = parser.parse_args()
     
@@ -413,8 +415,13 @@ def main():
                 sys.exit(1)
                 
             print(i18n("Starting download..."))
-            download_subs = not args.skip_youtube_subs
-            download_result = download_video.download(url, download_subs=download_subs, quality=args.video_quality)
+            download_result = download_video.download(
+                url,
+                download_subs=download_subs,
+                quality=args.video_quality,
+                cookies_from_browser=args.cookies_from_browser,
+                cookiefile=args.cookiefile
+            )
             
             if isinstance(download_result, tuple):
                 input_video, project_folder = download_result
@@ -508,7 +515,7 @@ def main():
                               transcript, 
                               args.min_duration, 
                               args.max_duration, 
-                              output_count=None 
+                              output_count=num_segments or args.segments
                           )
                           save_json.save_viral_segments(viral_segments, project_folder=project_folder)
                           print(i18n("Segments aligned and saved."))
