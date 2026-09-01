@@ -5,10 +5,32 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# We need to mock google.genai because it requires an API key and network connection.
-import google.genai as genai
-from google.genai.errors import APIError
+# Mock google.genai if not installed so tests can run in any environment
+try:
+    import google.genai as genai
+    from google.genai.errors import APIError
+except ImportError:
+    import types
+    genai = types.ModuleType("google.genai")
+    errors = types.ModuleType("google.genai.errors")
+    class APIError(Exception):
+        def __init__(self, code=None, message=None):
+            self.code = code
+            self.message = message
+            super().__init__(f"[{code}] {message}" if code else str(message))
+    errors.APIError = APIError
+    genai.errors = errors
+    genai.Client = MagicMock
+    google = types.ModuleType("google")
+    google.genai = genai
+    sys.modules["google"] = google
+    sys.modules["google.genai"] = genai
+    sys.modules["google.genai.errors"] = errors
 
+import scripts.create_viral_segments as cvs
+cvs.genai = genai
+cvs.APIError = APIError
+cvs.HAS_GEMINI = True
 from scripts.create_viral_segments import call_gemini
 
 class TestGeminiFallback(unittest.TestCase):

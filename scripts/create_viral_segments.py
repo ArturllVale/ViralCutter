@@ -5,6 +5,8 @@ import sys
 import time
 import ast
 import io
+import unicodedata
+import difflib
 
 # Configura stdout para evitar erros de encoding no Windows (substitui caracteres inválidos por ?)
 if sys.stdout and hasattr(sys.stdout, 'buffer'):
@@ -360,174 +362,379 @@ def load_transcript(project_folder):
 
     return transcript_segments
 
+def normalize_text(text):
+    """
+    Normalizes text by:
+    - Lowercasing
+    - Decomposing unicode and stripping diacritics / accents (NFKD)
+    - Removing all punctuation and non-alphanumeric characters
+    - Collapsing multiple whitespace characters into a single space
+    """
+    if not text:
+        return ""
+    text = str(text).lower()
+    nfkd = unicodedata.normalize('NFKD', text)
+    without_accents = ''.join([c for c in nfkd if not unicodedata.combining(c)])
+    clean = re.sub(r'[^\w\s]', ' ', without_accents)
+    return ' '.join(clean.split())
+
+def build_transcript_tokens(transcript_segments):
+    """
+    Builds a flattened list of normalized word tokens with interpolated timestamps
+    and segment references for fast, robust sequence matching.
+    """
+    tokens = []
+    for seg_idx, seg in enumerate(transcript_segments):
+        seg_text = seg.get('text', '')
+        seg_start = float(seg.get('start', 0.0))
+        seg_end = float(seg.get('end', seg_start))
+        
+        norm = normalize_text(seg_text)
+        words = norm.split()
+        if not words:
+            continue
+        
+        n_words = len(words)
+        dur = max(0.0, seg_end - seg_start)
+        step = dur / n_words if n_words > 0 else 0.0
+        
+        for w_idx, w in enumerate(words):
+            w_start = seg_start + w_idx * step
+            w_end = seg_start + (w_idx + 1) * step if w_idx < n_words - 1 else seg_end
+            tokens.append({
+                'word': w,
+                'seg_idx': seg_idx,
+                'start': w_start,
+                'end': w_end
+            })
+    return tokens
+
+def find_best_text_match(target_text, tokens, transcript_segments, ref_time_val, is_end=False, min_start_time=0.0, max_search_time=None):
+    """
+    Finds the best matching timestamp in the transcript for target_text.
+    Tolerates accent variations, punctuation, minor word omissions, and multi-segment spans.
+    """
+    norm_target = normalize_text(target_text)
+    t_words = norm_target.split()
+    
+    if not tokens:
+        if transcript_segments:
+            if is_end:
+                return float(transcript_segments[-1].get('end', ref_time_val))
+            return float(transcript_segments[0].get('start', ref_time_val))
+        return float(ref_time_val)
+
+    if not t_words:
+        # Fallback if no target text provided
+        return float(ref_time_val)
+
+    k = len(t_words)
+    target_str = ' '.join(t_words)
+
+    # Filter candidate token indices by time range if specified
+    valid_indices = []
+    for idx, tok in enumerate(tokens):
+        if tok['start'] < min_start_time - 1.0:
+            continue
+        if max_search_time is not None and tok['start'] > max_search_time:
+            break
+        valid_indices.append(idx)
+
+    if not valid_indices:
+        valid_indices = list(range(len(tokens)))
+
+    best_score = -1.0
+    best_match_span = None
+
+    # Try variable window lengths around k to accommodate missing/extra words (e.g. k-2 to k+2)
+    min_window = max(1, k - 2)
+    max_window = k + 3
+
+    for start_i in valid_indices:
+        for w_len in range(min_window, max_window + 1):
+            end_i = min(len(tokens), start_i + w_len)
+            window_tokens = tokens[start_i:end_i]
+            if not window_tokens:
+                continue
+                
+            window_words = [t['word'] for t in window_tokens]
+            
+            # Exact token match shortcut
+            if window_words == t_words:
+                similarity = 1.0
+            else:
+                window_str = ' '.join(window_words)
+                similarity = difflib.SequenceMatcher(None, target_str, window_str).ratio()
+
+            if similarity < 0.4:
+                continue
+
+            tok_time = window_tokens[0]['start'] if not is_end else window_tokens[-1]['end']
+            time_diff = abs(tok_time - ref_time_val)
+            combined_score = similarity - (time_diff * 0.0005)
+            
+            if combined_score > best_score:
+                best_score = combined_score
+                best_match_span = (start_i, end_i)
+                if similarity == 1.0 and time_diff < 5.0:
+                    break
+
+    if best_match_span is not None and best_score >= 0.35:
+        start_i, end_i = best_match_span
+        if is_end:
+            return tokens[end_i - 1]['end']
+        return tokens[start_i]['start']
+
+    # Fallback to closest segment to ref_time_val
+    closest_seg = min(transcript_segments, key=lambda s: abs(float(s.get('start', 0.0)) - float(ref_time_val)))
+    return float(closest_seg.get('end' if is_end else 'start', ref_time_val))
+
+def clamp_and_validate_duration(start_time, end_time, min_duration, max_duration, max_video_time):
+    """
+    Ensures start_time >= 0.0, end_time <= max_video_time, and duration is within [min_duration, max_duration].
+    Adjusts boundaries dynamically when close to video edges.
+    """
+    start = max(0.0, float(start_time))
+    end = float(end_time)
+    
+    if max_video_time is not None and max_video_time > 0:
+        max_limit = float(max_video_time)
+    else:
+        max_limit = max(end, float(max_duration))
+
+    end = min(max_limit, end)
+
+    if end <= start:
+        end = min(max_limit, start + float(min_duration))
+
+    duration = end - start
+
+    if max_limit < float(min_duration):
+        start = 0.0
+        end = max_limit
+    else:
+        if duration < float(min_duration):
+            end = min(max_limit, start + float(min_duration))
+            if (end - start) < float(min_duration):
+                start = max(0.0, end - float(min_duration))
+        elif duration > float(max_duration):
+            end = start + float(max_duration)
+
+    final_dur = max(0.0, end - start)
+    return round(start, 3), round(end, 3), round(final_dur, 3)
+
+def safe_score(seg):
+    """Safely extracts a numeric score from segment dictionary."""
+    val = seg.get('score', 0)
+    if isinstance(val, (int, float)):
+        return float(val)
+    try:
+        clean = re.sub(r'[^\d.]', '', str(val))
+        return float(clean) if clean else 0.0
+    except:
+        return 0.0
+
+def deduplicate_segments(segments, max_overlap_seconds=5.0, max_overlap_ratio=0.25):
+    """
+    Deduplicates candidate segments based on score and time overlap (IoU and intersection ratio).
+    Segments with higher scores take precedence.
+    """
+    if not segments:
+        return []
+
+    sorted_segs = sorted(
+        segments,
+        key=lambda x: (safe_score(x), float(x.get('duration', 0))),
+        reverse=True
+    )
+
+    unique = []
+    for candidate in sorted_segs:
+        c_start = float(candidate.get('start_time', 0))
+        c_end = float(candidate.get('end_time', 0))
+        c_dur = max(0.001, c_end - c_start)
+
+        is_dup = False
+        for existing in unique:
+            e_start = float(existing.get('start_time', 0))
+            e_end = float(existing.get('end_time', 0))
+            e_dur = max(0.001, e_end - e_start)
+
+            overlap_start = max(c_start, e_start)
+            overlap_end = min(c_end, e_end)
+
+            if overlap_end > overlap_start:
+                intersection = overlap_end - overlap_start
+                union = max(c_end, e_end) - min(c_start, e_start)
+                iou = intersection / union if union > 0 else 0.0
+                ratio = intersection / min(c_dur, e_dur)
+
+                if intersection > max_overlap_seconds or iou > max_overlap_ratio or ratio > 0.35:
+                    is_dup = True
+                    print(f"[DEBUG] Dropping overlap: '{candidate.get('title')}' ({c_start:.1f}-{c_end:.1f}s) overlaps with '{existing.get('title')}' ({e_start:.1f}-{e_end:.1f}s) [Intersection: {intersection:.1f}s, IoU: {iou:.2f}]")
+                    break
+
+        if not is_dup:
+            unique.append(candidate)
+
+    return unique
+
+def create_transcript_chunks(content, chunk_size=15000, overlap_size=None):
+    """
+    Chunks a text transcript containing (XXs) tags into overlapping segments of approximately chunk_size.
+    Ensures:
+    - Never splits time tags like (123s).
+    - Splits on word boundaries.
+    - Preserves overlap between consecutive chunks.
+    - Strictly monotonic progress.
+    """
+    if not content:
+        return []
+        
+    content_len = len(content)
+    chunk_size = int(chunk_size)
+    if content_len <= chunk_size:
+        return [content]
+
+    if overlap_size is None:
+        overlap_size = max(500, int(chunk_size * 0.1))
+    else:
+        overlap_size = int(overlap_size)
+        
+    overlap_size = max(50, min(overlap_size, int(chunk_size * 0.4)))
+
+    chunks = []
+    start = 0
+
+    while start < content_len:
+        end = min(start + chunk_size, content_len)
+        
+        if end < content_len:
+            # Avoid cutting in middle of a tag like "(123s)"
+            tag_match = re.search(r'\(\d+s?\)?$', content[start:end])
+            if tag_match:
+                end = start + tag_match.start()
+            
+            last_space = content.rfind(' ', start, end)
+            if last_space != -1 and last_space > start + (chunk_size // 3):
+                end = last_space
+
+        chunk_text = content[start:end].strip()
+        if chunk_text:
+            chunks.append(chunk_text)
+
+        if end >= content_len:
+            break
+
+        # Calculate next start with overlap
+        target_start = max(start + 1, end - overlap_size)
+        next_space = content.find(' ', target_start, min(target_start + 100, content_len))
+        if next_space != -1 and next_space < end:
+            start = next_space + 1
+        else:
+            start = target_start
+
+    return chunks
+
 def process_segments(raw_segments, transcript_segments, min_duration, max_duration, output_count=None):
     """
-    Aligns raw AI segments (with reference tags) to actual transcript timestamps.
-    Applies constraints, validation, and deduplication.
+    Aligns raw AI segments (with reference tags and start/end text) to actual transcript timestamps.
+    Applies text matching (tolerant to accents, punctuation, typos), duration constraints,
+    video boundary clamping, score-based deduplication, and global top-N selection.
     """
+    if not raw_segments or not transcript_segments:
+        return {"segments": []}
 
-    all_segments = raw_segments
-    tempo_minimo = min_duration
-    tempo_maximo = max_duration
+    tempo_minimo = float(min_duration)
+    tempo_maximo = float(max_duration)
+    max_video_time = max((float(s.get('end', 0.0)) for s in transcript_segments), default=0.0)
 
-    # Sort segments by score (descending)
-    try:
-        all_segments.sort(key=lambda x: int(x.get('score', 0)), reverse=True)
-    except:
-        pass
+    # Build token list for fast, fuzzy multi-word alignment
+    tokens = build_transcript_tokens(transcript_segments)
 
-    # --- POST-PROCESSING: Match Text to Timestamps ---
     processed_segments = []
+    print(f"[DEBUG] Matching {len(raw_segments)} raw segments to transcript timestamps...")
 
-    print(f"[DEBUG] Matching {len(all_segments)} raw segments to timestamps...")
-
-    for seg in all_segments:
+    for seg in raw_segments:
         try:
             # 1. Parse Reference Time
             ref_time_str = seg.get('start_time_ref', '(0s)')
-            ref_time_val = 0
+            ref_time_val = 0.0
             try:
-                if isinstance(ref_time_str, str):
-                    match = re.search(r'\d+', ref_time_str)
-                    if match:
-                         ref_time_val = int(match.group())
-                else:
-                    ref_time_val = int(ref_time_str)
+                if isinstance(ref_time_str, (int, float)):
+                    ref_time_val = float(ref_time_str)
+                elif isinstance(ref_time_str, str):
+                    m = re.search(r'\d+', ref_time_str)
+                    if m:
+                        ref_time_val = float(m.group())
             except:
-                ref_time_val = 0
+                ref_time_val = 0.0
 
-            # Find segment index closest to ref_time
-            start_idx = 0
-            min_diff = 999999
-            for i, s in enumerate(transcript_segments):
-                diff = abs(s['start'] - ref_time_val)
-                if diff < min_diff:
-                    min_diff = diff
-                    start_idx = i
-                if s['start'] > ref_time_val + 10:
-                    break
+            # 2. Match Start Text
+            start_text = seg.get('start_text', '')
+            final_start_time = find_best_text_match(
+                target_text=start_text,
+                tokens=tokens,
+                transcript_segments=transcript_segments,
+                ref_time_val=ref_time_val,
+                is_end=False
+            )
 
-            # Backtrack
-            start_idx = max(0, start_idx - 5)
+            # 3. Match End Text
+            end_text = seg.get('end_text', '')
+            min_end_search = final_start_time + (tempo_minimo * 0.4)
+            max_end_search = final_start_time + (tempo_maximo * 1.5)
+            
+            final_end_time = find_best_text_match(
+                target_text=end_text,
+                tokens=tokens,
+                transcript_segments=transcript_segments,
+                ref_time_val=final_start_time + tempo_minimo,
+                is_end=True,
+                min_start_time=min_end_search,
+                max_search_time=max_end_search
+            )
 
-            # 2. Find Exact Start Text
-            start_text_target = seg.get('start_text', '').lower().strip()
-            # Normalize
-            start_text_target = re.sub(r'[^\w\s]', '', start_text_target)
+            # 4. Validate & Clamp Duration within Video Limits
+            start_clamped, end_clamped, duration_clamped = clamp_and_validate_duration(
+                start_time=final_start_time,
+                end_time=final_end_time,
+                min_duration=tempo_minimo,
+                max_duration=tempo_maximo,
+                max_video_time=max_video_time
+            )
 
-            final_start_time = -1
-            match_start_idx = -1
+            score_val = safe_score(seg)
 
-            # Search window
-            search_limit = min(len(transcript_segments), start_idx + 50)
-
-            for i in range(start_idx, search_limit):
-                s_text = transcript_segments[i]['text'].lower()
-                s_text = re.sub(r'[^\w\s]', '', s_text)
-
-                # Check for partial match
-                if start_text_target and (start_text_target in s_text or s_text in start_text_target):
-                    final_start_time = transcript_segments[i]['start']
-                    match_start_idx = i
-                    break
-
-            # Fallback
-            if final_start_time == -1:
-                final_start_time = transcript_segments[start_idx]['start'] if start_idx < len(transcript_segments) else ref_time_val
-                match_start_idx = start_idx
-
-            # 3. Find End Text
-            end_text_target = seg.get('end_text', '').lower().strip()
-            end_text_target = re.sub(r'[^\w\s]', '', end_text_target)
-
-            final_end_time = -1
-
-            if match_start_idx != -1:
-                search_end_limit = min(len(transcript_segments), match_start_idx + 200)
-
-                for i in range(match_start_idx, search_end_limit):
-                    s_text = transcript_segments[i]['text'].lower()
-                    s_text = re.sub(r'[^\w\s]', '', s_text)
-
-                    if end_text_target and (end_text_target in s_text or s_text in end_text_target):
-                         final_end_time = transcript_segments[i]['end']
-                         break
-
-            # Fallback End Time
-            if final_end_time == -1:
-                 final_end_time = final_start_time + tempo_minimo
-
-            # Calculate Duration
-            duration = final_end_time - final_start_time
-
-            # Validate Duration (Min)
-            if duration < tempo_minimo:
-                print(f"[WARN] Segmento menor que duration min ({duration:.2f}s < {tempo_minimo}s). Estendendo para {tempo_minimo}s.")
-                duration = tempo_minimo
-                final_end_time = final_start_time + duration
-
-            # Validate Duration (Max)
-            if duration > tempo_maximo:
-                print(f"[WARN] Segmento excede max duration ({duration:.2f}s > {tempo_maximo}s). Cortando para {tempo_maximo}s.")
-                final_end_time = final_start_time + tempo_maximo
-                duration = tempo_maximo
-
-            # Construct Final Segment
             processed_segments.append({
                 "title": seg.get('title', 'Viral Segment'),
-                "start_time": final_start_time,
-                "end_time": final_end_time,
-                "hook": seg.get('title', ''),
+                "start_time": start_clamped,
+                "end_time": end_clamped,
+                "hook": seg.get('hook', seg.get('title', '')),
                 "reasoning": seg.get('reasoning', ''),
-                "score": seg.get('score', 0),
-                "duration": duration
+                "score": score_val,
+                "duration": duration_clamped
             })
 
         except Exception as e:
             print(f"[WARN] Error processing segment {seg}: {e}")
             continue
 
-    # Deduplication
-    unique_segments = []
-    processed_segments.sort(key=lambda x: int(x.get('score', 0)), reverse=True)
+    # 5. Deduplication across all chunks
+    unique_segments = deduplicate_segments(processed_segments)
+    print(f"[DEBUG] Finished processing. {len(unique_segments)} segments valid after deduplication.")
 
-    for candidate in processed_segments:
-        is_dup = False
-        for existing in unique_segments:
-            s1, e1 = candidate['start_time'], candidate['end_time']
-            # Simple float equality isn't safe, but max/min handles it
-            s2, e2 = existing['start_time'], existing['end_time']
+    # 6. Global Top-N Selection
+    if output_count is not None:
+        try:
+            count_limit = int(output_count)
+            if count_limit > 0 and len(unique_segments) > count_limit:
+                print(f"Filtrando os top {count_limit} segmentos de {len(unique_segments)} candidatos encontrados.")
+                unique_segments = unique_segments[:count_limit]
+        except (ValueError, TypeError):
+            pass
 
-            overlap_start = max(s1, s2)
-            overlap_end = min(e1, e2)
-
-            if overlap_end > overlap_start:
-                intersection = overlap_end - overlap_start
-                if intersection > 5: # more than 5 seconds overlap
-                    is_dup = True
-                    print(f"[DEBUG] Dropping overlap: '{candidate.get('title')}' ({s1:.1f}-{e1:.1f}) overlaps with '{existing.get('title')}' ({s2:.1f}-{e2:.1f}) by {intersection:.1f}s")
-                    break
-        if not is_dup:
-            unique_segments.append(candidate)
-
-    all_segments = unique_segments
-    print(f"[DEBUG] Finished processing. {len(all_segments)} segments valid.")
-
-    if output_count and len(all_segments) > output_count:
-        print(f"Filtrando os top {output_count} segmentos de {len(all_segments)} candidatos encontrados nos chunks.")
-        all_segments = all_segments[:output_count]
-
-    final_result = {"segments": all_segments}
-
-    # Validação básica de que temos start_time
-    validated_segments = []
-    for seg in final_result['segments']:
-        if 'start_time' in seg:
-             validated_segments.append(seg)
-
-    final_result['segments'] = validated_segments
-
-    return final_result
+    return {"segments": unique_segments}
 
 
 def create(num_segments, viral_mode, themes, tempo_minimo, tempo_maximo, ai_mode="manual", api_key=None, project_folder="tmp", chunk_size_arg=None, model_name_arg=None):
@@ -624,30 +831,8 @@ OUTPUT JSON ONLY:
     # Chunking
     chunk_size = int(current_chunk_size)
     overlap_size = max(1000, int(chunk_size * 0.1))
-
-    chunks = []
-    start = 0
-    content_len = len(content)
-
-    print(f"[DEBUG] Chunking content (Size: {content_len}) with Chunk Size: {chunk_size} and Overlap: {overlap_size}")
-
-    while start < content_len:
-        end = min(start + chunk_size, content_len)
-        if end < content_len:
-            last_space = content.rfind(' ', start, end)
-            if last_space != -1 and last_space > start:
-                end = last_space
-        chunk_text = content[start:end]
-        if chunk_text.strip():
-            chunks.append(chunk_text)
-        if end >= content_len:
-            break
-        next_start = max(start + 1, end - overlap_size)
-        safe_space = content.rfind(' ', start, next_start)
-        if safe_space != -1:
-            start = safe_space + 1
-        else:
-            start = next_start
+    chunks = create_transcript_chunks(content, chunk_size=chunk_size, overlap_size=overlap_size)
+    print(f"[DEBUG] Chunking content (Size: {len(content)}) into {len(chunks)} chunks with Chunk Size: {chunk_size} and Overlap: {overlap_size}")
 
     if viral_mode:
         virality_instruction = f"""analyze the segment for potential virality and identify {quantidade_de_virals} most viral segments from the transcript"""
