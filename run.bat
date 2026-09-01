@@ -1,9 +1,17 @@
 @echo off
 setlocal
-title ViralCutter
+title ViralCutter CLI
 
 cd /d "%~dp0"
-call .venv\Scripts\activate.bat
+
+if exist ".venv\Scripts\activate.bat" (
+    call ".venv\Scripts\activate.bat"
+) else (
+    echo AVISO: Ambiente virtual .venv nao encontrado.
+    echo Execute install_dependencies.bat primeiro se encontrar problemas.
+    echo Tentando executar com o Python do sistema...
+)
+
 python main_improved.py
 echo.
 pause

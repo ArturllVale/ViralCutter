@@ -1,15 +1,20 @@
 @echo off
+setlocal
+cd /d "%~dp0"
+
 echo ==========================================
-echo Instalando uv (Gerenciador de pacotes rapido Python)...
+echo Instalando/Atualizando uv (Gerenciador de pacotes Python)...
 echo ==========================================
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+:: Adiciona locais padrao do uv ao PATH da sessao atual
+set "PATH=%USERPROFILE%\.local\bin;%USERPROFILE%\.cargo\bin;%PATH%"
 
 echo.
 echo ==========================================
 echo Criando ambiente virtual (.venv)...
 echo ==========================================
-:: Tenta usar o uv do PATH. Se falhar, pode ser necessario reiniciar o terminal.
-uv venv
+uv venv .venv
 
 echo.
 echo ==========================================
@@ -23,13 +28,13 @@ set /p gpu_choice="Escolha (1/2): "
 if "%gpu_choice%"=="1" (
     echo.
     echo Instalando PyTorch e ONNX para NVIDIA...
-    uv pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
-    uv pip install onnxruntime-gpu==1.20.1
+    uv pip install --python .venv torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+    uv pip install --python .venv onnxruntime-gpu==1.20.1
 ) else (
     echo.
     echo Instalando PyTorch e ONNX para AMD/CPU...
-    uv pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-    uv pip install onnxruntime==1.20.1
+    uv pip install --python .venv torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+    uv pip install --python .venv onnxruntime==1.20.1
 )
 
 echo.
@@ -37,12 +42,10 @@ echo ==========================================
 echo Instalando dependencias essenciais do requirements.txt...
 echo (IAs em Nuvem / Sem Modelos Locais)
 echo ==========================================
-:: Ativa o venv temporariamente para o install (uv gerencia isso automaticamente se detectar o venv, mas vamos garantir)
-:: Se o uv venv criou a pasta .venv, o uv pip install vai usar ela por padrao se estiver na raiz.
-uv pip install -r requirements.txt
+uv pip install --python .venv -r requirements.txt
 
 echo.
 echo ==========================================
-echo Concluido!
+echo Concluido! O ambiente .venv foi configurado com sucesso.
 echo ==========================================
 pause

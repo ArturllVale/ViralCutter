@@ -29,7 +29,7 @@ def get_existing_projects():
         projects = [d for d in os.listdir(VIRALS_DIR) if os.path.isdir(os.path.join(VIRALS_DIR, d))]
         projects.sort(key=lambda x: os.path.getctime(os.path.join(VIRALS_DIR, x)), reverse=True)
         return projects
-    except:
+    except Exception:
         return []
 
 def refresh_projects():
@@ -226,7 +226,8 @@ def generate_project_gallery(project_path_name, is_full_path=False):
                     val = int(score)
                     if val < 70: score_color = "#ef4444" 
                     elif val < 85: score_color = "#eab308"
-            except: pass
+            except Exception:
+                pass
 
             # Card HTML - Dark Grid Style like Opus.pro (Inline Styles)
             if 'export_link' not in locals(): export_link = "" # Fallback if URL mode didn't trigger

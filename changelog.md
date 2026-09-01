@@ -1,5 +1,21 @@
 # Changelog
 
+## Auditoria de Confiabilidade, Segurança, Testes e CI
+
+### Segurança e Estabilidade Operacional
+- **Eliminação de Logs Inseguros**: Removidas rotinas de escrita descontrolada de arquivos de log (`debug_colors.log`, `debug_preview.log`) no diretório de trabalho.
+- **Tratamento Seguro de Exceções**: Substituição integral de blocos `except:` desprotegidos em todos os scripts do núcleo (`create_viral_segments.py`, `edit_video.py`, `export_xml_lib`, `main_improved.py`, `webui`), prevenindo supressão inadvertida de interrupções de processo e garantindo logging contextual seguro.
+- **Sanitização de Artefatos e Jupyter Notebook**: Limpeza de outputs e sessões expiradas em `ViralCutter.ipynb`.
+- **Módulo i18n Robusto**: Resolução determinística de caminhos absolutos para dicionários de tradução, mitigando falhas quando executado fora da raiz do projeto, e correção do extrator AST `scan_i18n.py`.
+
+### Distribuição e Scripts Windows
+- **Hardening de Inicializadores (.bat)**: Scripts `run_webui.bat`, `run.bat`, `install_dependencies.bat` e `install_dependencies_advanced_LocalLLM.bat` atualizados com verificação de diretório base (`%~dp0`), auto-injeção de caminhos do `uv` no `PATH` da sessão e detecção clara de `.venv`.
+- **Dependências de Teste**: Adicionado `pytest` ao `requirements.txt` e configuração de execução contínua com `pytest.ini`.
+
+### Suite de Testes e CI Multiplataforma
+- **Testes Automatizados Isolados**: Criação de novas suites unitárias independentes de GPU, APIs externas, downloads reais ou credenciais para `i18n`, `cut_json`, `adjust_subtitles`, `premiere_xml` e `translate_json`.
+- **Pipeline de Integração Contínua (GitHub Actions)**: Adicionado workflow `.github/workflows/ci.yml` com matrix de testes multiplataforma (Ubuntu e Windows) cobrindo Python 3.10, 3.11 e 3.12.
+
 ## Fixes for Manual/Raw JSON Input
 
 ### Core Functionality

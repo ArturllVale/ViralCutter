@@ -411,11 +411,6 @@ def render_preview_video(font, size, color, highlight, outline, outline_thick, s
                          h_size, w_block, gap, mode, under, strike, border_s, vert_pos, align, remove_punc):
     # Helper to convert HEX to ASS color &HBBGGRR&
     def hex_to_ass(h):
-        try:
-            with open("debug_preview.log", "a") as f:
-                f.write(f"PREVIEW INPUT: '{h}'\n")
-        except: pass
-        
         if not h: return "&H00FFFFFF&"
         
         hex_clean = h.lstrip('#').strip()
@@ -434,7 +429,8 @@ def render_preview_video(font, size, color, highlight, outline, outline_thick, s
                      g = max(0, min(255, g))
                      b = max(0, min(255, b))
                      return f"&H00{b:02X}{g:02X}{r:02X}&".upper()
-            except: pass
+            except Exception:
+                return "&H00FFFFFF&"
             
         if len(hex_clean) == 3:
             hex_clean = "".join([c*2 for c in hex_clean])
@@ -528,8 +524,10 @@ def render_preview_video(font, size, color, highlight, outline, outline_thick, s
                     if f.startswith("preview_render_") and f.endswith(".mp4") and f != os.path.basename(cache_bust_path):
                         try:
                             os.remove(os.path.join(preview_dir, f))
-                        except: pass
-            except: pass
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             
             return gr.update(value=cache_bust_path, autoplay=True)
             

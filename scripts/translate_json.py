@@ -2,8 +2,18 @@ import os
 import json
 import asyncio
 from pathlib import Path
-import tqdm.asyncio
-from deep_translator import GoogleTranslator
+
+try:
+    import tqdm.asyncio
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+
+try:
+    from deep_translator import GoogleTranslator
+    HAS_DEEP_TRANSLATOR = True
+except ImportError:
+    HAS_DEEP_TRANSLATOR = False
 
 # Lista de idiomas alvo
 target_languages = ['en']
@@ -28,6 +38,8 @@ def substituir_texto(text, substituicoes):
     return text
 
 async def translate_chunk(index, chunk, target_lang):
+    if not HAS_DEEP_TRANSLATOR:
+        raise ImportError("deep_translator is not installed. Please install deep-translator to use translation.")
     while True:
         try:
             translator = GoogleTranslator(source='auto', target=target_lang)
@@ -185,8 +197,12 @@ async def translate_json_file(json_file_path: Path, translated_json_path: Path, 
             task = asyncio.create_task(run_translate(index, chunk, target_lang))
             tasks.append(task)
 
-        for tsk in tqdm.asyncio.tqdm_asyncio.as_completed(tasks, total=len(tasks), desc="Translating", unit="chunks", unit_scale=False, leave=True, bar_format="{desc} {percentage:3.0f}% | {n_fmt}/{total_fmt} | ETA: {remaining} | ⏱: {elapsed}"):
-            await tsk
+        if HAS_TQDM:
+            for tsk in tqdm.asyncio.tqdm_asyncio.as_completed(tasks, total=len(tasks), desc="Translating", unit="chunks", unit_scale=False, leave=True, bar_format="{desc} {percentage:3.0f}% | {n_fmt}/{total_fmt} | ETA: {remaining} | ⏱: {elapsed}"):
+                await tsk
+        else:
+            for tsk in tasks:
+                await tsk
 
     await translate_async()
 

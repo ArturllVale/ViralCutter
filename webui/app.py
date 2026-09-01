@@ -56,11 +56,6 @@ current_process = None
 
 # Helpers
 def convert_color_to_ass(hex_color, alpha="00"):
-    try:
-        with open("debug_colors.log", "a") as f:
-             f.write(f"INPUT: '{hex_color}'\n")
-    except: pass
-
     if not hex_color:
         return f"&H{alpha}FFFFFF&"
     
@@ -80,17 +75,9 @@ def convert_color_to_ass(hex_color, alpha="00"):
                 g = max(0, min(255, g))
                 b = max(0, min(255, b))
                 # Convert to hex
-                ret = f"&H{alpha}{b:02X}{g:02X}{r:02X}&".upper()
-                try:
-                    with open("debug_colors.log", "a") as f:
-                         f.write(f"PARSED RGB: {ret}\n")
-                except: pass
-                return ret
-        except Exception as e:
-            try:
-                with open("debug_colors.log", "a") as f:
-                     f.write(f"RGB ERROR: {e}\n")
-            except: pass
+                return f"&H{alpha}{b:02X}{g:02X}{r:02X}&".upper()
+        except Exception:
+            return f"&H{alpha}FFFFFF&"
 
     # Handle 3-digit hex (e.g. F00 -> FF0000)
     if len(hex_clean) == 3:
@@ -101,17 +88,8 @@ def convert_color_to_ass(hex_color, alpha="00"):
         g = hex_clean[2:4]
         b = hex_clean[4:6]
         # Uppercase just in case
-        ret = f"&H{alpha}{b}{g}{r}&".upper() 
-        try:
-            with open("debug_colors.log", "a") as f:
-                 f.write(f"PARSED HEX: {ret}\n")
-        except: pass
-        return ret
+        return f"&H{alpha}{b}{g}{r}&".upper()
         
-    try:
-        with open("debug_colors.log", "a") as f:
-             f.write(f"INVALID: Defaulting to White\n")
-    except: pass
     return f"&H{alpha}FFFFFF&"
 
 def kill_process():

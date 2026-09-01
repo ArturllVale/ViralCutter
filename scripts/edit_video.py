@@ -197,7 +197,7 @@ def finalize_video(input_file, output_file, index, fps, project_folder, final_fo
         print(f"[WARN] Hardware muxing failed with {encoder_name}: {stderr_msg}. Retrying with CPU libx264...")
         if os.path.exists(final_output):
             try: os.remove(final_output)
-            except: pass
+            except Exception: pass
 
     # 2. CPU Fallback
     if not success:
@@ -213,7 +213,7 @@ def finalize_video(input_file, output_file, index, fps, project_folder, final_fo
             stderr_msg2 = e2.stderr if hasattr(e2, 'stderr') and e2.stderr else str(e2)
             if os.path.exists(final_output):
                 try: os.remove(final_output)
-                except: pass
+                except Exception: pass
             raise RuntimeError(f"FFmpeg error muxing {final_output}: {stderr_msg2}") from e2
 
     # Cleanup temp video file
@@ -1056,7 +1056,8 @@ def generate_short_insightface(input_file, output_file, index, project_folder, f
                     f_list.append(float(f"{rh:.4f}"))
                     processed_faces_log.append(f_list)
                 coords_entry["faces"] = processed_faces_log
-        except: pass
+        except Exception:
+            pass
         coordinate_log.append(coords_entry)
 
         out.write(result)
@@ -1197,7 +1198,8 @@ def edit(project_folder="tmp", face_model="insightface", face_mode="auto", detec
              elif input_filename.startswith("output"): # output000
                  idx_str = input_filename[6:9]
                  if idx_str.isdigit(): index = int(idx_str)
-        except: pass
+        except Exception:
+            pass
         
         output_file = os.path.join(final_folder, f"temp_video_no_audio_{index}.mp4")
 

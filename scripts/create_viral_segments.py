@@ -13,7 +13,7 @@ if sys.stdout and hasattr(sys.stdout, 'buffer'):
     try:
         # Mantém encoding original mas ignora erros (substitui por ?)
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding=sys.stdout.encoding or 'utf-8', errors='replace', line_buffering=True)
-    except:
+    except Exception:
         pass
 
 # Tenta importar bibliotecas de IA opcionalmente
@@ -58,7 +58,7 @@ def clean_json_response(response_text):
         if "\\n" in response_text or "\\\"" in response_text:
              # Tenta um decode básico de escapes
              response_text = response_text.replace("\\n", "\n").replace("\\\"", "\"").replace("\\'", "'")
-    except:
+    except Exception:
         pass
 
     # 2. Busca pela palavra-chave "segments"
@@ -89,7 +89,7 @@ def clean_json_response(response_text):
                 obj, _ = decoder.raw_decode(candidate_text)
                 if 'segments' in obj and isinstance(obj['segments'], list):
                     return obj
-            except:
+            except Exception:
                 pass
 
             # Tentativa B: ast.literal_eval
@@ -124,7 +124,7 @@ def clean_json_response(response_text):
                     obj = ast.literal_eval(clean_cand)
                     if 'segments' in obj and isinstance(obj['segments'], list):
                         return obj
-            except:
+            except Exception:
                 pass
 
     # 3. Fallback: Extração bruta de markdown
@@ -132,11 +132,10 @@ def clean_json_response(response_text):
         match = re.search(r"```json(.*?)```", response_text, re.DOTALL)
         if match:
             return json.loads(match.group(1))
-    except:
+    except Exception:
         pass
 
     # 4. LAST RESORT: Fragment Parser (Para JSON truncado/incompleto)
-    # Procura por "segments": [ e tenta parsear item por item
     try:
         match_list = re.search(r'"segments"\s*:\s*\[', response_text)
         if match_list:
@@ -166,7 +165,7 @@ def clean_json_response(response_text):
             if found_segments:
                 print(f"[INFO] Recuperado {len(found_segments)} segmentos de JSON truncado.")
                 return {"segments": found_segments}
-    except:
+    except Exception:
         pass
 
     return {"segments": []}
@@ -301,7 +300,7 @@ def call_g4f(prompt, model_name="gpt-4o-mini"):
 
             try:
                 return json.dumps(response, ensure_ascii=False)
-            except:
+            except Exception:
                 return str(response)
 
         except Exception as e:
@@ -531,7 +530,7 @@ def safe_score(seg):
     try:
         clean = re.sub(r'[^\d.]', '', str(val))
         return float(clean) if clean else 0.0
-    except:
+    except Exception:
         return 0.0
 
 def deduplicate_segments(segments, max_overlap_seconds=5.0, max_overlap_ratio=0.25):
@@ -544,40 +543,49 @@ def deduplicate_segments(segments, max_overlap_seconds=5.0, max_overlap_ratio=0.
 
     sorted_segs = sorted(
         segments,
-        key=lambda x: (safe_score(x), float(x.get('duration', 0))),
+        key=lambda s: safe_score(s),
         reverse=True
     )
 
-    unique = []
-    for candidate in sorted_segs:
-        c_start = float(candidate.get('start_time', 0))
-        c_end = float(candidate.get('end_time', 0))
+    accepted = []
+
+    for cand in sorted_segs:
+        c_start = float(cand.get('start_time', 0.0))
+        c_end = float(cand.get('end_time', 0.0))
         c_dur = max(0.001, c_end - c_start)
 
-        is_dup = False
-        for existing in unique:
-            e_start = float(existing.get('start_time', 0))
-            e_end = float(existing.get('end_time', 0))
-            e_dur = max(0.001, e_end - e_start)
+        overlap_found = False
+        for acc in accepted:
+            a_start = float(acc.get('start_time', 0.0))
+            a_end = float(acc.get('end_time', 0.0))
+            a_dur = max(0.001, a_end - a_start)
 
-            overlap_start = max(c_start, e_start)
-            overlap_end = min(c_end, e_end)
+            # Calculate intersection
+            inter_start = max(c_start, a_start)
+            inter_end = min(c_end, a_end)
+            intersection = max(0.0, inter_end - inter_start)
 
-            if overlap_end > overlap_start:
-                intersection = overlap_end - overlap_start
-                union = max(c_end, e_end) - min(c_start, e_start)
+            if intersection > 0:
+                union = (c_dur + a_dur) - intersection
                 iou = intersection / union if union > 0 else 0.0
-                ratio = intersection / min(c_dur, e_dur)
+                ratio = intersection / min(c_dur, a_dur)
 
-                if intersection > max_overlap_seconds or iou > max_overlap_ratio or ratio > 0.35:
-                    is_dup = True
-                    print(f"[DEBUG] Dropping overlap: '{candidate.get('title')}' ({c_start:.1f}-{c_end:.1f}s) overlaps with '{existing.get('title')}' ({e_start:.1f}-{e_end:.1f}s) [Intersection: {intersection:.1f}s, IoU: {iou:.2f}]")
+                # Overlap conditions
+                if intersection > max_overlap_seconds or ratio > max_overlap_ratio or iou > 0.35:
+                    print(
+                        f"[DEBUG] Dropping overlap: '{cand.get('title', 'Unknown')}' "
+                        f"({c_start:.1f}-{c_end:.1f}s) overlaps with '{acc.get('title', 'Unknown')}' "
+                        f"({a_start:.1f}-{a_end:.1f}s) [Intersection: {intersection:.1f}s, IoU: {iou:.2f}]"
+                    )
+                    overlap_found = True
                     break
 
-        if not is_dup:
-            unique.append(candidate)
+        if not overlap_found:
+            accepted.append(cand)
 
-    return unique
+    # Sort final accepted segments chronologically
+    accepted.sort(key=lambda s: float(s.get('start_time', 0.0)))
+    return accepted
 
 def create_transcript_chunks(content, chunk_size=15000, overlap_size=None):
     """
@@ -667,7 +675,7 @@ def process_segments(raw_segments, transcript_segments, min_duration, max_durati
                     m = re.search(r'\d+', ref_time_str)
                     if m:
                         ref_time_val = float(m.group())
-            except:
+            except Exception:
                 ref_time_val = 0.0
 
             # 2. Match Start Text
@@ -953,7 +961,7 @@ OUTPUT JSON ONLY:
                     try:
                         rest = sys.stdin.read()
                         response_text += rest
-                    except:
+                    except Exception:
                         pass
 
         elif ai_mode == "gemini":

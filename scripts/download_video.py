@@ -5,7 +5,11 @@ import json
 import time
 import glob
 from enum import Enum
-import yt_dlp
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
+
 from i18n.i18n import I18nAuto
 
 i18n = I18nAuto()
@@ -400,10 +404,9 @@ def download(
     cookiefile=None,
     max_retries=3
 ):
-    """
-    Downloads YouTube video and subtitles with configurable cookies, retry logic for transient errors,
-    and container validation.
-    """
+    if yt_dlp is None:
+        raise ImportError("yt-dlp is not installed. Please install it with 'pip install yt-dlp'.")
+
     # Resolve cookies configuration
     resolved_browser, resolved_cookiefile = resolve_cookie_config(
         cookies_from_browser=cookies_from_browser,
