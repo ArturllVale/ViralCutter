@@ -3,29 +3,43 @@ import re
 import os
 
 def format_time_ass(time_seconds):
-    hours = int(time_seconds // 3600)
-    minutes = int((time_seconds % 3600) // 60)
-    seconds = int(time_seconds % 60)
-    centiseconds = int((time_seconds % 1) * 100)
-    return f"{hours:01}:{minutes:02}:{seconds:02}.{centiseconds:02}"
+    """
+    Formats seconds to ASS timestamp format: H:MM:SS.CS with proper centisecond carry.
+    """
+    cs_total = int(round(max(0.0, float(time_seconds)) * 100))
+    cs = cs_total % 100
+    s_total = cs_total // 100
+    s = s_total % 60
+    m_total = s_total // 60
+    m = m_total % 60
+    h = m_total // 60
+    return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
+
+def sanitize_word_for_ass(w, remove_punct=True):
+    if not isinstance(w, str):
+        w = str(w)
+    # Remove ASS special brackets to avoid breaking ASS override tags
+    w = w.replace('{', '').replace('}', '').replace('\\', '')
+    if remove_punct:
+        # Remove punctuation while strictly preserving Unicode letters and diacritics
+        w = re.sub(r'[.,!?;:()"\u201c\u201d\u2018\u2019\u2014\u2013«»¿¡\-_/]', '', w)
+    return w.strip()
 
 def generate_ass_from_file(input_path, output_path, project_folder, 
                            base_color, base_size, highlight_size, highlight_color, 
                            words_per_block, gap_limit, mode, vertical_position, alignment, 
                            font, outline_color, shadow_color, bold, italic, underline, 
-                            strikeout, border_style, outline_thickness, shadow_size, uppercase,
-                            face_modes={}, remove_punctuation=True):
+                           strikeout, border_style, outline_thickness, shadow_size, uppercase,
+                           face_modes={}, remove_punctuation=True):
     """
     Generates a single ASS file from a JSON input.
     """
     
     # 1. Load Timeline Data (if exists)
-    # 1. Load Timeline Data (if exists)
     filename = os.path.basename(input_path)
     base_name = os.path.splitext(filename)[0]
 
     # Try renamed timeline first (e.g. 000_Title_timeline.json)
-    # Subtitle is 000_Title_processed.json -> 000_Title_timeline.json
     renamed_timeline_name = base_name.replace("_processed", "") + "_timeline.json"
     renamed_timeline_path = os.path.join(project_folder, "final", renamed_timeline_name)
 
@@ -34,9 +48,10 @@ def generate_ass_from_file(input_path, output_path, project_folder,
 
     if os.path.exists(renamed_timeline_path):
         try:
-             with open(renamed_timeline_path, "r") as tf:
+             with open(renamed_timeline_path, "r", encoding="utf-8") as tf:
                  timeline_data = json.load(tf)
-        except: pass
+        except Exception:
+            pass
     
     # Check for Index (outputXXX or XXX_Title)
     match_output = re.search(r"output(\d+)", filename)
@@ -52,12 +67,12 @@ def generate_ass_from_file(input_path, output_path, project_folder,
          csv_timeline = os.path.join(project_folder, "final", f"temp_video_no_audio_{idx}_timeline.json")
          if os.path.exists(csv_timeline):
              try:
-                 with open(csv_timeline, "r") as tf:
+                 with open(csv_timeline, "r", encoding="utf-8") as tf:
                      timeline_data = json.load(tf)
-             except: pass
+             except Exception:
+                 pass
 
     # 2. Determine Style Overrides (Face Mode)
-    # Determine static alignment (fallback)
     key = base_name
     if idx is not None:
         key = f"output{str(idx).zfill(3)}"
@@ -66,7 +81,7 @@ def generate_ass_from_file(input_path, output_path, project_folder,
     current_vertical_position = vertical_position
     
     mode_face = face_modes.get(key)
-    if mode_face == "2" and not timeline_data: # Only use static if no timeline
+    if mode_face == "2" and not timeline_data:
         current_alignment = 5 
         current_vertical_position = 0 
 
@@ -83,51 +98,61 @@ def generate_ass_from_file(input_path, output_path, project_folder,
 
     # 4. Generate Content
     header_ass = f"""[Script Info]
-    Title: Dynamic Subtitles
-    ScriptType: v4.00+
-    PlayDepth: 0
-    PlayResX: 360
-    PlayResY: 640
+Title: Dynamic Subtitles
+ScriptType: v4.00+
+PlayDepth: 0
+PlayResX: 360
+PlayResY: 640
 
-    [V4+ Styles]
-    Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-    Style: Default,{font},{base_size},{base_color},&H00000000,{outline_color},{shadow_color},{bold},{italic},{underline},{strikeout},100,100,0,0,{border_style},{outline_thickness},{shadow_size},{alignment},-2,-2,{vertical_position},1
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{font},{base_size},{base_color},&H00000000,{outline_color},{shadow_color},{bold},{italic},{underline},{strikeout},100,100,0,0,{border_style},{outline_thickness},{shadow_size},{alignment},-2,-2,{vertical_position},1
 
-    [Events]
-    Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-    """
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
     
     total_lines_written = 0
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(header_ass)
 
-
         last_end_time = 0.0
 
         for segment in json_data.get('segments', []):
             words = segment.get('words', [])
-            total_words = len(words)
+            # Fallback: se 'words' estiver vazio mas houver texto, sintetiza palavras
+            if not words and segment.get('text', '').strip():
+                raw_tokens = segment['text'].strip().split()
+                if raw_tokens:
+                    seg_s = float(segment.get('start', 0.0))
+                    seg_e = float(segment.get('end', seg_s + len(raw_tokens) * 0.4))
+                    seg_dur = max(0.1, seg_e - seg_s)
+                    step = seg_dur / len(raw_tokens)
+                    words = []
+                    for w_idx, tok in enumerate(raw_tokens):
+                        words.append({
+                            'word': tok,
+                            'start': round(seg_s + w_idx * step, 3),
+                            'end': round(seg_s + (w_idx + 1) * step, 3)
+                        })
 
+            total_words = len(words)
             i = 0
             while i < total_words:
                 block = []
                 while len(block) < words_per_block and i < total_words:
                     current_word = words[i]
                     if 'word' in current_word:
-                        if remove_punctuation:
-                            cleaned_word = re.sub(r'[.,!?;]', '', current_word['word'])
-                            block.append({**current_word, 'word': cleaned_word})
-                        else:
-                            block.append(current_word)
+                        cleaned = sanitize_word_for_ass(current_word['word'], remove_punctuation)
+                        if cleaned:
+                            block.append({**current_word, 'word': cleaned})
 
                         if i + 1 < total_words:
                             next_word = words[i + 1]
                             if 'start' not in next_word or 'end' not in next_word:
-                                if remove_punctuation:
-                                    next_cleaned_word = re.sub(r'[.,!?;]', '', next_word['word'])
-                                    block[-1]['word'] += " " + next_cleaned_word
-                                else:
-                                    block[-1]['word'] += " " + next_word['word']
+                                next_cleaned = sanitize_word_for_ass(next_word.get('word', ''), remove_punctuation)
+                                if next_cleaned and block:
+                                    block[-1]['word'] += " " + next_cleaned
                                 i += 1
                     i += 1
 

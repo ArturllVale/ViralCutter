@@ -601,6 +601,8 @@ def main():
                      title = segment.get("title", f"Segment_{idx}")
                      safe_title = "".join([c for c in title if c.isalnum() or c in " _-"]).strip()
                      safe_title = safe_title.replace(" ", "_")[:60]
+                     if not safe_title:
+                         safe_title = f"Segment_{idx}"
                      
                      new_base_name = f"{idx:03d}_{safe_title}"
                      

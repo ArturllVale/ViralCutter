@@ -1,12 +1,20 @@
 import os
 import sys
-import torch
 import time
-import whisperx
 import gc
 import re
 import glob
+import json
 from i18n.i18n import I18nAuto
+
+try:
+    import torch
+    import whisperx
+    HAS_WHISPERX = True
+except ImportError:
+    torch = None
+    whisperx = None
+    HAS_WHISPERX = False
 
 i18n = I18nAuto()
 
@@ -15,6 +23,8 @@ def apply_safe_globals_hack():
     Workaround for 'Weights only load failed' error in newer PyTorch versions.
     We first try to add safe globals. If that's not enough/fails, we monkeypatch torch.load.
     """
+    if not HAS_WHISPERX or torch is None:
+        return
     try:
         import omegaconf
         if hasattr(torch.serialization, 'add_safe_globals'):
@@ -64,35 +74,41 @@ def parse_srt(srt_path):
         blocks = content.strip().split('\n\n')
         
         def time_to_seconds(t_str):
-            # SRT: 00:00:00,000
-            t_str = t_str.replace(',', '.')
+            t_str = t_str.strip().split()[0].replace(',', '.')
             parts = t_str.split(':')
-            if len(parts) == 3:
-                h, m, s = parts
-                return int(h) * 3600 + int(m) * 60 + float(s)
-            elif len(parts) == 2:
-                m, s = parts
-                return int(m) * 60 + float(s)
+            try:
+                if len(parts) == 3:
+                    h, m, s = parts
+                    return int(h) * 3600 + int(m) * 60 + float(s)
+                elif len(parts) == 2:
+                    m, s = parts
+                    return int(m) * 60 + float(s)
+                elif len(parts) == 1:
+                    return float(parts[0])
+            except (ValueError, TypeError):
+                pass
             return 0.0
 
         for block in blocks:
             lines = block.split('\n')
-            # Busca linha de tempo
             for i, line in enumerate(lines):
                 if '-->' in line:
-                    start_str, end_str = line.split(' --> ')
+                    parts = line.split('-->')
+                    start_str = parts[0].strip()
+                    end_str = parts[1].strip().split()[0]
                     text_lines = lines[i+1:]
                     text = " ".join(text_lines).strip()
-                    text = re.sub(r'<[^>]+>', '', text) # Remove tags
+                    text = re.sub(r'<[^>]+>', '', text)
                     
                     if text:
-                        start = time_to_seconds(start_str.strip())
-                        end = time_to_seconds(end_str.strip())
-                        segments.append({
-                            "start": start,
-                            "end": end,
-                            "text": text
-                        })
+                        start = time_to_seconds(start_str)
+                        end = time_to_seconds(end_str)
+                        if end > start:
+                            segments.append({
+                                "start": start,
+                                "end": end,
+                                "text": text
+                            })
                     break
     except Exception as e:
         print(f"Error parsing SRT {srt_path}: {e}")
@@ -110,15 +126,19 @@ def parse_vtt(vtt_path):
             lines = f.readlines()
         
         def vtt_time_to_seconds(t_str):
-            # VTT: 00:00:00.000 or 00:00.000
-            t_str = t_str.strip()
+            t_str = t_str.strip().split()[0].replace(',', '.')
             parts = t_str.split(':')
-            if len(parts) == 3:
-                h, m, s = parts
-                return int(h) * 3600 + int(m) * 60 + float(s)
-            elif len(parts) == 2:
-                m, s = parts
-                return int(m) * 60 + float(s)
+            try:
+                if len(parts) == 3:
+                    h, m, s = parts
+                    return int(h) * 3600 + int(m) * 60 + float(s)
+                elif len(parts) == 2:
+                    m, s = parts
+                    return int(m) * 60 + float(s)
+                elif len(parts) == 1:
+                    return float(parts[0])
+            except (ValueError, TypeError):
+                pass
             return 0.0
 
         current_entry = {"text": []}
@@ -126,14 +146,12 @@ def parse_vtt(vtt_path):
         for line in lines:
             line = line.strip()
             if not line:
-                # Fim de bloco, salva se tiver tempo e texto
                 if "start" in current_entry and current_entry["text"]:
                     full_text = " ".join(current_entry["text"]).strip()
-                    # Limpeza extra VTT
                     full_text = re.sub(r'<[^>]+>', '', full_text)
                     full_text = re.sub(r'&[^;]+;', '', full_text)
                     
-                    if full_text:
+                    if full_text and current_entry["end"] > current_entry["start"]:
                         segments.append({
                             "start": current_entry["start"],
                             "end": current_entry["end"],
@@ -145,23 +163,20 @@ def parse_vtt(vtt_path):
             if line.startswith("WEBVTT") or line.startswith("X-TIMESTAMP-MAP") or line.startswith("NOTE"):
                 continue
 
-            # Timestamp line: 00:00:05.000 --> 00:00:10.000 (pode ter settings depois)
             if "-->" in line:
                 times = line.split("-->")
                 start_str = times[0].strip()
-                end_str = times[1].strip().split(" ")[0] # remove settings
+                end_str = times[1].strip().split()[0]
                 current_entry["start"] = vtt_time_to_seconds(start_str)
                 current_entry["end"] = vtt_time_to_seconds(end_str)
             else:
-                # É texto (se já tivermos timestamps)
                 if "start" in current_entry:
                      current_entry["text"].append(line)
                      
-        # Salva ultimo bloco se existir
         if "start" in current_entry and current_entry["text"]:
             full_text = " ".join(current_entry["text"]).strip()
             full_text = re.sub(r'<[^>]+>', '', full_text)
-            if full_text:
+            if full_text and current_entry["end"] > current_entry["start"]:
                 segments.append({
                     "start": current_entry["start"],
                     "end": current_entry["end"],
@@ -172,6 +187,19 @@ def parse_vtt(vtt_path):
         print(f"Error parsing VTT {vtt_path}: {e}")
         return None
     return segments
+
+def is_valid_transcription_file(fpath, is_json=False):
+    """Verifica se o arquivo de transcrição existe e contém conteúdo válido."""
+    if not os.path.exists(fpath) or os.path.getsize(fpath) == 0:
+        return False
+    if is_json:
+        try:
+            with open(fpath, 'r', encoding='utf-8') as jf:
+                d = json.load(jf)
+                return isinstance(d, dict) and ('segments' in d or len(d) > 0)
+        except Exception:
+            return False
+    return True
 
 def transcribe(input_file, model_name='large-v3', project_folder='tmp'):
     print(i18n(f"Iniciando transcrição de {input_file}..."))
@@ -195,9 +223,11 @@ def transcribe(input_file, model_name='large-v3', project_folder='tmp'):
     tsv_file = os.path.join(output_folder, f"{base_name}.tsv")
     json_file = os.path.join(output_folder, f"{base_name}.json")
 
-    # Verifica se os arquivos já existem
-    if os.path.exists(srt_file) and os.path.exists(tsv_file) and os.path.exists(json_file):
-        print(f"Os arquivos SRT, TSV e JSON já existem. Pulando a transcrição.")
+    # Verifica se os arquivos já existem e são válidos
+    if (is_valid_transcription_file(srt_file) and 
+        is_valid_transcription_file(tsv_file) and 
+        is_valid_transcription_file(json_file, is_json=True)):
+        print("Os arquivos SRT, TSV e JSON já existem e são válidos. Pulando a transcrição.")
         return srt_file, tsv_file
 
     # Device Setup
